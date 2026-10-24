@@ -667,5 +667,165 @@ react/cjs/react-jsx-runtime.production.js:
 */
 
   </script>
+<script>
+// --- Voice input (speech to text) ---
+(function () {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return; // browser has no speech recognition: no mic buttons
+
+  // placeholder text -> { mode: 'flow' | 'overlay', lang: 'pref' | fixed code, offset }
+  var TARGETS = [
+    { ph: "Search products...", mode: "flow", lang: "pref" },
+    { ph: "Search inventory...", mode: "overlay", lang: "pref", offset: 34 },
+    { ph: "Search product in Tamil or English...", mode: "overlay", lang: "pref", offset: 8 },
+    { ph: "Search product by name or Tamil...", mode: "overlay", lang: "pref", offset: 8 },
+    { ph: "Product name in English", mode: "overlay", lang: "en-IN", offset: 8 },
+    { ph: "\u0BA4\u0BAE\u0BBF\u0BB4\u0BBF\u0BB2\u0BCD \u0BAA\u0BC6\u0BAF\u0BB0\u0BCD", mode: "overlay", lang: "ta-IN", offset: 8 }
+  ];
+
+  function getPref() { try { return localStorage.getItem("srt_voice_lang") || "ta-IN"; } catch (e) { return "ta-IN"; } }
+  function setPref(v) { try { localStorage.setItem("srt_voice_lang", v); } catch (e) {} }
+
+  var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  function fill(input, text) {
+    setter.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  var toastEl;
+  function toast(msg) {
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.style.cssText = "position:fixed;left:50%;bottom:80px;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:20px;font-size:13px;z-index:99999;display:none;max-width:90%;text-align:center";
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.style.display = "block";
+    clearTimeout(toastEl._t);
+    toastEl._t = setTimeout(function () { toastEl.style.display = "none"; }, 2500);
+  }
+
+  var active = null; // { rec, btn }
+  function stopActive() {
+    if (active) { try { active.rec.stop(); } catch (e) {} }
+  }
+
+  function listen(input, btn, langOf) {
+    if (active && active.btn === btn) { stopActive(); return; }
+    stopActive();
+    var rec = new SR();
+    rec.lang = langOf();
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.maxAlternatives = 1;
+    var mine = { rec: rec, btn: btn };
+    rec.onstart = function () { active = mine; btn.style.background = "#d32f2f"; btn.style.color = "#fff"; };
+    rec.onend = function () { if (active === mine) active = null; btn.style.background = "#fff"; btn.style.color = "#333"; };
+    rec.onerror = function (e) {
+      var m = {
+        "not-allowed": "Microphone permission denied",
+        "service-not-allowed": "Microphone permission denied",
+        "no-speech": "No speech heard, try again",
+        "network": "Voice needs an internet connection",
+        "audio-capture": "No microphone found"
+      };
+      toast(m[e.error] || "Voice input failed");
+    };
+    rec.onresult = function (e) {
+      var text = "";
+      for (var i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+      fill(input, text.trim());
+    };
+    try { rec.start(); } catch (err) { toast("Could not start microphone"); }
+  }
+
+  var BTN_CSS = "width:30px;height:30px;border-radius:50%;border:1px solid #ccc;background:#fff;color:#333;font-size:15px;line-height:1;padding:0;cursor:pointer;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;";
+  var CHIP_CSS = "height:24px;border-radius:12px;border:1px solid #ccc;background:#fff;color:#333;font-size:11px;padding:0 7px;cursor:pointer;flex-shrink:0;";
+
+  var items = []; // { input, wrap, cfg }
+
+  function attach(input, cfg) {
+    var wrap = document.createElement("span");
+    wrap.setAttribute("data-voice-wrap", "1");
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "\uD83C\uDFA4";
+    btn.setAttribute("aria-label", "Voice input");
+    btn.style.cssText = BTN_CSS;
+    var fixed = cfg.lang !== "pref";
+    var chip = null;
+    if (!fixed) {
+      chip = document.createElement("button");
+      chip.type = "button";
+      chip.style.cssText = CHIP_CSS;
+      chip.setAttribute("aria-label", "Switch voice language");
+      var paint = function () { chip.textContent = getPref() === "ta-IN" ? "\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD" : "EN"; };
+      paint();
+      chip.addEventListener("click", function (ev) {
+        ev.preventDefault(); ev.stopPropagation();
+        setPref(getPref() === "ta-IN" ? "en-IN" : "ta-IN");
+        document.querySelectorAll("[data-voice-chip]").forEach(function (c) { c.textContent = getPref() === "ta-IN" ? "\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD" : "EN"; });
+      });
+      chip.setAttribute("data-voice-chip", "1");
+    }
+    btn.addEventListener("mousedown", function (ev) { ev.preventDefault(); });
+    btn.addEventListener("click", function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      listen(input, btn, function () { return fixed ? cfg.lang : getPref(); });
+    });
+    wrap.appendChild(btn);
+    if (chip) wrap.appendChild(chip);
+
+    if (cfg.mode === "flow") {
+      wrap.style.cssText = "display:inline-flex;align-items:center;gap:4px;flex-shrink:0;";
+      input.parentNode.insertBefore(wrap, input.nextSibling);
+    } else {
+      var p = input.parentNode;
+      if (getComputedStyle(p).position === "static") p.style.position = "relative";
+      wrap.style.cssText = "position:absolute;display:inline-flex;align-items:center;gap:4px;z-index:5;";
+      p.appendChild(wrap);
+      input.style.paddingRight = (cfg.offset + (chip ? 78 : 40)) + "px";
+    }
+    input.setAttribute("data-voice", "1");
+    items.push({ input: input, wrap: wrap, cfg: cfg });
+  }
+
+  function place() {
+    items.forEach(function (it) {
+      if (it.cfg.mode !== "overlay") return;
+      var i = it.input, p = i.parentNode;
+      if (!p || i.offsetParent !== p) return;
+      var w = it.wrap;
+      w.style.top = (i.offsetTop + (i.offsetHeight - 30) / 2) + "px";
+      w.style.right = (p.clientWidth - (i.offsetLeft + i.offsetWidth) + it.cfg.offset) + "px";
+    });
+  }
+
+  var queued = false;
+  function scan() {
+    queued = false;
+    // drop buttons whose input is gone
+    items = items.filter(function (it) {
+      if (!it.input.isConnected) { if (it.wrap.parentNode) it.wrap.parentNode.removeChild(it.wrap); return false; }
+      return true;
+    });
+    document.querySelectorAll("input").forEach(function (inp) {
+      if (inp.getAttribute("data-voice") || inp.type === "number" || inp.type === "password") return;
+      var ph = inp.getAttribute("placeholder");
+      if (!ph) return;
+      for (var k = 0; k < TARGETS.length; k++) {
+        if (TARGETS[k].ph === ph) { attach(inp, TARGETS[k]); break; }
+      }
+    });
+    place();
+  }
+  function queue() { if (!queued) { queued = true; requestAnimationFrame(scan); } }
+
+  new MutationObserver(queue).observe(document.body, { childList: true, subtree: true });
+  window.addEventListener("resize", queue);
+  queue();
+})();
+
+</script>
 </body>
 </html>
